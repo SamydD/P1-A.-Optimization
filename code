@@ -1,0 +1,203 @@
+import pandas as pd
+import numpy as np
+
+data = pd.read_csv('input_data.csv', index_col=0)
+demand = data.loc['Offer'].dropna().values.astype(float)
+supply = data['Demand'].drop('Offer').values.astype(float)
+costs = data.drop('Demand', axis=1).drop('Offer', axis=0).values.astype(float)
+
+m, n = costs.shape
+ts = supply.sum()
+td = demand.sum()
+
+if ts < td:
+    diff = td - ts
+    supply = np.append(supply, diff)
+    costs = np.vstack([costs, np.zeros((1, n))])
+    m += 1
+elif ts > td:
+    diff = ts - td
+    demand = np.append(demand, diff)
+    costs = np.hstack([costs, np.zeros((m, 1))])
+    n += 1
+
+def northwest_corner(s, d):
+    s = s.copy()
+    d = d.copy()
+    alloc = np.zeros((len(s), len(d)))
+    i, j = 0, 0
+    while i < len(s) and j < len(d):
+        x = min(s[i], d[j])
+        alloc[i,j] = x
+        s[i] -= x
+        d[j] -= x
+        if s[i] == 0:
+            i += 1
+        elif d[j] == 0:
+            j += 1
+    return alloc
+
+def min_cost_method(s, d, c):
+    s = s.copy()
+    d = d.copy()
+    alloc = np.zeros(c.shape)
+    clist = [(c[i,j], i, j) for i in range(len(s)) for j in range(len(d))]
+    clist.sort(key=lambda x: x[0])
+    for cost, i, j in clist:
+        if s[i] > 0 and d[j] > 0:
+            x = min(s[i], d[j])
+            alloc[i,j] = x
+            s[i] -= x
+            d[j] -= x
+    return alloc
+
+def min_row_cost_method(s, d, c):
+    s = s.copy()
+    d = d.copy()
+    alloc = np.zeros(c.shape)
+    for i in range(len(s)):
+        row = [(c[i,j], j) for j in range(len(d))]
+        row.sort(key=lambda x: x[0])
+        for cost, j in row:
+            if s[i] > 0 and d[j] > 0:
+                x = min(s[i], d[j])
+                alloc[i,j] = x
+                s[i] -= x
+                d[j] -= x
+    return alloc
+
+def vogel(s, d, c):
+    s = s.copy()
+    d = d.copy()
+    alloc = np.zeros(c.shape)
+    def penalty(cs, ss, dd):
+        rp = []
+        cp = []
+        for i in range(len(ss)):
+            if ss[i] > 0:
+                rowc = [cs[i,j] for j in range(len(dd)) if dd[j]>0]
+                if len(rowc) >= 2:
+                    rowc.sort()
+                    p = rowc[1]-rowc[0]
+                else:
+                    p = rowc[0] if rowc else 0
+                rp.append((p, 'r', i))
+        for j in range(len(dd)):
+            if dd[j] > 0:
+                colc = [cs[i,j] for i in range(len(ss)) if ss[i]>0]
+                if len(colc) >= 2:
+                    colc.sort()
+                    p = colc[1]-colc[0]
+                else:
+                    p = colc[0] if colc else 0
+                cp.append((p, 'c', j))
+        return rp, cp
+    while s.sum()>0 and d.sum()>0:
+        rp, cp = penalty(c, s, d)
+        merged = rp+cp
+        if not merged:
+            break
+        merged.sort(key=lambda x:x[0], reverse=True)
+        p = merged[0]
+        if p[1]=='r':
+            i = p[2]
+            rowc = [(c[i,j], j) for j in range(len(d)) if d[j]>0]
+            rowc.sort(key=lambda x:x[0])
+            j = rowc[0][1]
+            x = min(s[i], d[j])
+            alloc[i,j] = x
+            s[i]-=x
+            d[j]-=x
+        else:
+            j = p[2]
+            colc = [(c[i,j], i) for i in range(len(s)) if s[i]>0]
+            colc.sort(key=lambda x:x[0])
+            i = colc[0][1]
+            x = min(s[i], d[j])
+            alloc[i,j] = x
+            s[i]-=x
+            d[j]-=x
+    return alloc
+
+def compute_potentials(a, c):
+    m, n = a.shape
+    u = [None]*m
+    v = [None]*n
+    u[0] = 0
+    changed = True
+    while changed:
+        changed = False
+        for i in range(m):
+            for j in range(n):
+                if a[i,j]>0:
+                    if u[i] is not None and v[j] is None:
+                        v[j] = c[i,j]-u[i]
+                        changed = True
+                    elif v[j] is not None and u[i] is None:
+                        u[i] = c[i,j]-v[j]
+                        changed = True
+    u = [0 if x is None else x for x in u]
+    v = [0 if x is None else x for x in v]
+    return u,v
+
+def find_entering(a, c, u, v):
+    m, n = a.shape
+    mn = 0
+    ei, ej = None, None
+    for i in range(m):
+        for j in range(n):
+            if a[i,j]==0:
+                rc = c[i,j]- (u[i]+v[j])
+                if rc<mn:
+                    mn=rc
+                    ei, ej = i, j
+    return ei, ej, mn
+
+def find_cycle(a, ei, ej):
+    pos = [(x,y) for x in range(a.shape[0]) for y in range(a.shape[1]) if a[x,y]>0 or (x==ei and y==ej)]
+    def nr(r,c):
+        return [(r,y) for (rr,y) in pos if rr==r and y!=c]
+    def nc(r,c):
+        return [(x,c) for (x,yy) in pos if yy==c and x!=r]
+    def backtrack(path, move='r'):
+        cur = path[-1]
+        if move=='r':
+            neighbors = nr(*cur)
+        else:
+            neighbors = nc(*cur)
+        for nxt in neighbors:
+            if nxt==(ei,ej) and len(path)>=4:
+                return path
+            if nxt not in path:
+                res = backtrack(path+[nxt], 'c' if move=='r' else 'r')
+                if res is not None:
+                    return res
+        return None
+    return backtrack([(ei,ej)], 'r')
+
+def transportation_simplex(a, c):
+    a = a.copy()
+    while True:
+        u,v = compute_potentials(a, c)
+        ei, ej, mn = find_entering(a, c, u, v)
+        if ei is None or mn>=0:
+            break
+        cycle = find_cycle(a, ei, ej)
+        if cycle is None:
+            break
+        minus = cycle[1::2]
+        th = min(a[x,y] for x,y in minus if (x,y)!=(ei,ej) and a[x,y]>0)
+        for k,(x,y) in enumerate(cycle):
+            if k%2==0:
+                a[x,y]+=th
+            else:
+                a[x,y]-=th
+    return a, (a*c).sum()
+
+nw = northwest_corner(supply, demand)
+mc = min_cost_method(supply, demand, costs)
+mr = min_row_cost_method(supply, demand, costs)
+va = vogel(supply, demand, costs)
+opt_alloc, opt_cost = transportation_simplex(va, costs)
+print(opt_alloc)
+print(opt_cost)
